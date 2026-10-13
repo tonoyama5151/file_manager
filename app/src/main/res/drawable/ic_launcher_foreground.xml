@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- フォルダ形のアイコン（108dp キャンバス、中央 66dp が安全領域） -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- フォルダのタブ -->
+    <path
+        android:fillColor="#FFD9E7F7"
+        android:pathData="M32,38 L48,38 L53,43 L76,43 C78.2,43 80,44.8 80,47 L80,49 L28,49 L28,42 C28,39.8 29.8,38 32,38 Z" />
+    <!-- フォルダ本体 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M28,48 L80,48 L80,70 C80,72.2 78.2,74 76,74 L32,74 C29.8,74 28,72.2 28,70 Z" />
+    <!-- 雲（pCloud 連携の目印） -->
+    <path
+        android:fillColor="#FF1F5FAD"
+        android:pathData="M47,67 L62,67 C64.8,67 67,64.8 67,62 C67,59.4 65,57.3 62.5,57 C61.8,54.1 59.2,52 56,52 C52.9,52 50.3,54.1 49.6,57 L49,57 C46.2,57 44,59.2 44,62 C44,64.8 46.2,67 47,67 Z" />
+</vector>
