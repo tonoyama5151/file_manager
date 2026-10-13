@@ -1,5 +1,7 @@
 package com.tonoyama.filemanager.pcloud
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -38,6 +40,8 @@ data class PEntry(
     val fileId: Long,
     val size: Long,
     val modified: Long,
+    /** pCloud 側でサムネイルを作れるファイルか（画像・動画など） */
+    val hasThumb: Boolean = false,
 )
 
 data class PFolder(val folderId: Long, val name: String, val entries: List<PEntry>)
@@ -135,6 +139,7 @@ class PCloudApi(private val host: String, private val token: String) {
                             fileId = o.optLong("fileid"),
                             size = o.optLong("size"),
                             modified = parseDate(o.optString("modified")),
+                            hasThumb = o.optBoolean("thumb"),
                         )
                     )
                 }
@@ -150,6 +155,25 @@ class PCloudApi(private val host: String, private val token: String) {
         val hosts = json.getJSONArray("hosts")
         if (hosts.length() == 0) throw IOException("ダウンロード先が見つかりません")
         return "https://" + hosts.getString(0) + json.getString("path")
+    }
+
+    /** サムネイル画像（正方形に切り抜き）を取得する。作れない場合は null */
+    suspend fun thumbnail(fileId: Long, sizePx: Int): Bitmap? = withContext(Dispatchers.IO) {
+        // 幅・高さは 4 か 5 の倍数で 16〜1024 の範囲という制約がある
+        val size = (sizePx / 4 * 4).coerceIn(16, 1024)
+        val query = "fileid=$fileId&size=${size}x$size&crop=1&access_token=" + URLEncoder.encode(token, "UTF-8")
+        val conn = URL("https://$host/getthumb?$query").openConnection() as HttpURLConnection
+        try {
+            conn.connectTimeout = 15_000
+            conn.readTimeout = 30_000
+            if (conn.responseCode !in 200..299) return@withContext null
+            // エラー時は画像ではなく JSON が返る
+            if (conn.contentType?.contains("json") == true) return@withContext null
+            val bytes = conn.inputStream.use { it.readBytes() }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        } finally {
+            conn.disconnect()
+        }
     }
 
     private fun parseDate(text: String): Long = try {

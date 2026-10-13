@@ -33,19 +33,23 @@ object LocalFileOps {
         return c == p || c.startsWith(p + File.separator)
     }
 
-    suspend fun copy(sources: List<File>, destDir: File, progress: ProgressListener) {
+    /** コピーして、作成したファイル・フォルダを返す */
+    suspend fun copy(sources: List<File>, destDir: File, progress: ProgressListener): List<File> {
         val total = countEntries(sources)
         var done = 0
+        val created = ArrayList<File>()
         for (src in sources) {
             if (src.isDirectory && isInside(destDir, src)) {
                 throw IOException("「${src.name}」を自分自身の中にはコピーできません")
             }
             val target = uniqueTarget(destDir, src.name)
+            created += target
             copyRecursive(src, target) { name ->
                 done++
                 progress(name, done, total)
             }
         }
+        return created
     }
 
     private suspend fun copyRecursive(src: File, target: File, onItem: (String) -> Unit) {
@@ -71,8 +75,10 @@ object LocalFileOps {
         }
     }
 
-    suspend fun move(sources: List<File>, destDir: File, progress: ProgressListener) {
+    /** 移動して、移動元と移動先の組を返す */
+    suspend fun move(sources: List<File>, destDir: File, progress: ProgressListener): List<Pair<File, File>> {
         val total = sources.size
+        val moved = ArrayList<Pair<File, File>>()
         sources.forEachIndexed { i, src ->
             coroutineContext.ensureActive()
             if (src.parentFile?.canonicalPath == destDir.canonicalPath) {
@@ -89,7 +95,9 @@ object LocalFileOps {
                 copyRecursive(src, target) { }
                 if (!src.deleteRecursively()) throw IOException("移動元を削除できません: ${src.name}")
             }
+            moved += src to target
         }
+        return moved
     }
 
     suspend fun delete(targets: List<File>, progress: ProgressListener) {

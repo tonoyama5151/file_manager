@@ -7,6 +7,7 @@ import android.os.Environment
 import android.os.storage.StorageManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.tonoyama.filemanager.media.MediaIndex
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -44,6 +45,7 @@ data class LocalUiState(
     val showHidden: Boolean = false,
     val sortMode: SortMode = SortMode.NAME,
     val ascending: Boolean = true,
+    val grid: Boolean = false,
     val clipboard: Clipboard? = null,
     val operation: Operation? = null,
     val message: String? = null,
@@ -54,42 +56,42 @@ data class LocalUiState(
             roots.filter { dir.path == it.dir.path || dir.path.startsWith(it.dir.path + "/") }
                 .maxByOrNull { it.dir.path.length }
         }
+    val atRoot: Boolean get() = currentRoot?.dir?.path == currentDir?.path
 }
 
+/**
+ * フォルダ画面の状態と、アプリ全体で共通のファイル操作（コピー・移動・削除など）を受け持つ。
+ * ジャンル一覧や分析画面からの操作もここを通す。
+ */
 class LocalViewModel(app: Application) : AndroidViewModel(app) {
 
     private val prefs = app.getSharedPreferences("local", Context.MODE_PRIVATE)
     private val _state = MutableStateFlow(
         LocalUiState(
+            roots = findRoots(),
             showHidden = prefs.getBoolean("showHidden", false),
             sortMode = runCatching { SortMode.valueOf(prefs.getString("sort", "NAME")!!) }.getOrDefault(SortMode.NAME),
             ascending = prefs.getBoolean("ascending", true),
+            grid = prefs.getBoolean("grid", false),
         )
     )
     val state: StateFlow<LocalUiState> = _state.asStateFlow()
 
+    /** ファイル操作が終わるたびに増える（他の画面が再読み込みの合図に使う） */
+    private val _opVersion = MutableStateFlow(0)
+    val opVersion: StateFlow<Int> = _opVersion.asStateFlow()
+
     private var operationJob: Job? = null
 
-    /** 権限が得られた後に呼ぶ */
-    fun start() {
-        val roots = findRoots()
-        _state.update { it.copy(roots = roots) }
-        if (_state.value.currentDir == null) {
-            roots.firstOrNull()?.let { open(it.dir) } ?: _state.update { it.copy(message = "ストレージが見つかりません") }
-        } else {
-            refresh()
-        }
-    }
-
     private fun findRoots(): List<StorageRoot> {
-        val list = mutableListOf(StorageRoot("内部ストレージ", Environment.getExternalStorageDirectory()))
+        val list = mutableListOf(StorageRoot("メインストレージ", Environment.getExternalStorageDirectory()))
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val sm = getApplication<Application>().getSystemService(StorageManager::class.java)
             sm?.storageVolumes?.forEach { vol ->
                 val dir = vol.directory
                 if (!vol.isPrimary && dir != null && dir.canRead()) {
                     val label = vol.getDescription(getApplication<Application>())
-                    list += StorageRoot(if (label.isNullOrBlank()) dir.name else label, dir)
+                    list += StorageRoot(if (label.isNullOrBlank()) "SDカード" else label, dir)
                 }
             }
         }
@@ -97,7 +99,7 @@ class LocalViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun open(dir: File) {
-        _state.update { it.copy(currentDir = dir, selection = emptySet()) }
+        _state.update { it.copy(currentDir = dir, selection = emptySet(), items = if (it.currentDir == dir) it.items else emptyList()) }
         refresh()
     }
 
@@ -105,8 +107,7 @@ class LocalViewModel(app: Application) : AndroidViewModel(app) {
     fun goUp(): Boolean {
         val s = _state.value
         val dir = s.currentDir ?: return false
-        val root = s.currentRoot
-        if (root != null && dir.path == root.dir.path) return false
+        if (s.atRoot) return false
         val parent = dir.parentFile ?: return false
         open(parent)
         return true
@@ -123,7 +124,7 @@ class LocalViewModel(app: Application) : AndroidViewModel(app) {
                 else st.copy(
                     items = items,
                     loading = false,
-                    selection = st.selection.filter { sel -> items.any { it.file == sel } }.toSet(),
+                    selection = st.selection.intersect(items.mapTo(HashSet()) { it.file }),
                 )
             }
         }
@@ -173,6 +174,11 @@ class LocalViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
+    fun toggleGrid() {
+        _state.update { it.copy(grid = !it.grid) }
+        prefs.edit().putBoolean("grid", _state.value.grid).apply()
+    }
+
     // ---------- 選択 ----------
 
     fun toggleSelect(file: File) {
@@ -192,14 +198,18 @@ class LocalViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- 操作 ----------
 
-    fun copySelection(cut: Boolean) {
-        val files = _state.value.selection.toList()
+    private val context: Context get() = getApplication<Application>()
+
+    fun copySelection(cut: Boolean) = setClipboard(_state.value.selection.toList(), cut)
+
+    /** コピー・切り取り対象を覚える。貼り付けはフォルダ画面で行う */
+    fun setClipboard(files: List<File>, cut: Boolean) {
         if (files.isEmpty()) return
         _state.update {
             it.copy(
                 clipboard = Clipboard(files, cut),
                 selection = emptySet(),
-                message = "${files.size}件を${if (cut) "切り取り" else "コピー"}しました。貼り付け先を開いてください",
+                message = "${files.size}件を${if (cut) "切り取り" else "コピー"}しました。貼り付け先のフォルダを開いてください",
             )
         }
     }
@@ -210,19 +220,36 @@ class LocalViewModel(app: Application) : AndroidViewModel(app) {
         val clip = _state.value.clipboard ?: return
         val dest = _state.value.currentDir ?: return
         runOperation(if (clip.isCut) "移動中" else "コピー中", done = { if (clip.isCut) "移動しました" else "コピーしました" }) { p ->
-            if (clip.isCut) LocalFileOps.move(clip.files, dest, p) else LocalFileOps.copy(clip.files, dest, p)
-            if (clip.isCut) _state.update { it.copy(clipboard = null) }
+            if (clip.isCut) {
+                val moved = LocalFileOps.move(clip.files, dest, p)
+                _state.update { it.copy(clipboard = null) }
+                MediaIndex.notifyRemoved(context, moved.map { it.first })
+                MediaIndex.notifyAdded(context, moved.map { it.second })
+            } else {
+                MediaIndex.notifyAdded(context, LocalFileOps.copy(clip.files, dest, p))
+            }
         }
     }
 
-    fun deleteSelection() {
-        val files = _state.value.selection.toList()
+    fun deleteSelection() = deleteFiles(_state.value.selection.toList())
+
+    fun deleteFiles(files: List<File>) {
         if (files.isEmpty()) return
-        runOperation("削除中", done = { "${files.size}件を削除しました" }) { p -> LocalFileOps.delete(files, p) }
+        runOperation("削除中", done = { "${files.size}件を削除しました" }) { p ->
+            try {
+                LocalFileOps.delete(files, p)
+            } finally {
+                MediaIndex.notifyRemoved(context, files.filter { !it.exists() })
+            }
+        }
     }
 
     fun rename(file: File, newName: String) {
-        runOperation("名前を変更中", done = { "名前を変更しました" }) { LocalFileOps.rename(file, newName.trim()) }
+        runOperation("名前を変更中", done = { "名前を変更しました" }) {
+            val renamed = LocalFileOps.rename(file, newName.trim())
+            MediaIndex.notifyRemoved(context, listOf(file))
+            MediaIndex.notifyAdded(context, listOf(renamed))
+        }
     }
 
     fun createFolder(name: String) {
@@ -236,14 +263,18 @@ class LocalViewModel(app: Application) : AndroidViewModel(app) {
         if (files.isEmpty()) return
         var created: File? = null
         runOperation("圧縮中", done = { "「${created?.name}」を作成しました" }) { p ->
-            created = ArchiveOps.compressToZip(files, dir, zipName.trim(), p)
+            val zip = ArchiveOps.compressToZip(files, dir, zipName.trim(), p)
+            created = zip
+            MediaIndex.notifyAdded(context, listOf(zip))
         }
     }
 
     fun extract(archive: File) {
         var out: File? = null
         runOperation("解凍中", done = { "「${out?.name}」に展開しました" }) { p ->
-            out = ArchiveOps.extract(archive, p)
+            val dest = ArchiveOps.extract(archive, p)
+            out = dest
+            MediaIndex.notifyAdded(context, listOf(dest))
         }
     }
 
@@ -272,6 +303,7 @@ class LocalViewModel(app: Application) : AndroidViewModel(app) {
                 "エラー: ${e.message ?: e.javaClass.simpleName}"
             }
             _state.update { it.copy(operation = null, message = msg) }
+            _opVersion.update { it + 1 }
             refresh()
         }
     }

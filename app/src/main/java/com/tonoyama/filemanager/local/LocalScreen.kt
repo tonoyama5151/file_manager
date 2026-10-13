@@ -22,12 +22,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -38,6 +43,7 @@ import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhoneAndroid
@@ -86,9 +92,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.tonoyama.filemanager.ui.ConfirmDialog
-import com.tonoyama.filemanager.ui.FileIcon
+import com.tonoyama.filemanager.thumb.LocalThumb
+import com.tonoyama.filemanager.thumb.LocalThumbSmall
 import com.tonoyama.filemanager.ui.NameInputDialog
 import com.tonoyama.filemanager.ui.ProgressDialog
 import com.tonoyama.filemanager.util.FileOpener
@@ -105,8 +111,9 @@ private sealed interface LocalDialog {
     data class Details(val file: File) : LocalDialog
 }
 
+/** 「全ファイルへのアクセス」が許可されるまで案内画面を出し、許可後に content を表示する */
 @Composable
-fun LocalScreen(vm: LocalViewModel = viewModel()) {
+fun StoragePermissionGate(content: @Composable () -> Unit) {
     val context = LocalContext.current
     var hasPermission by remember { mutableStateOf(StoragePermission.granted(context)) }
 
@@ -117,10 +124,6 @@ fun LocalScreen(vm: LocalViewModel = viewModel()) {
     // 設定画面から戻ってきたときに権限を確認し直す
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         hasPermission = StoragePermission.granted(context)
-    }
-
-    LaunchedEffect(hasPermission) {
-        if (hasPermission) vm.start()
     }
 
     if (!hasPermission) {
@@ -135,10 +138,15 @@ fun LocalScreen(vm: LocalViewModel = viewModel()) {
                 legacyLauncher.launch(StoragePermission.legacyPermissions)
             }
         })
-        return
+    } else {
+        content()
     }
+}
 
-    FileBrowser(vm)
+/** フォルダ画面。ストレージの最上位で「戻る」と onBack（ホームへ） */
+@Composable
+fun LocalScreen(vm: LocalViewModel, onBack: () -> Unit) {
+    FileBrowser(vm, onBack)
 }
 
 @Composable
@@ -168,7 +176,7 @@ private fun PermissionRequest(onRequest: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-private fun FileBrowser(vm: LocalViewModel) {
+private fun FileBrowser(vm: LocalViewModel, onBack: () -> Unit) {
     val context = LocalContext.current
     val state by vm.state.collectAsState()
     val snackbar = remember { SnackbarHostState() }
@@ -185,7 +193,7 @@ private fun FileBrowser(vm: LocalViewModel) {
     }
 
     BackHandler(enabled = state.selectionMode) { vm.clearSelection() }
-    BackHandler(enabled = !state.selectionMode && state.currentRoot?.dir?.path != state.currentDir?.path) {
+    BackHandler(enabled = !state.selectionMode && !state.atRoot) {
         vm.goUp()
     }
 
@@ -238,9 +246,8 @@ private fun FileBrowser(vm: LocalViewModel) {
             } else {
                 TopAppBar(
                     navigationIcon = {
-                        val canGoUp = state.currentRoot?.dir?.path != state.currentDir?.path
-                        if (canGoUp) {
-                            IconButton(onClick = { vm.goUp() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "上へ") }
+                        IconButton(onClick = { if (!vm.goUp()) onBack() }) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "戻る")
                         }
                     },
                     title = {
@@ -253,6 +260,10 @@ private fun FileBrowser(vm: LocalViewModel) {
                         )
                     },
                     actions = {
+                        IconButton(onClick = vm::toggleGrid) {
+                            if (state.grid) Icon(Icons.AutoMirrored.Filled.ViewList, "リスト表示")
+                            else Icon(Icons.Filled.GridView, "グリッド表示")
+                        }
                         if (state.roots.size > 1) {
                             Box {
                                 IconButton(onClick = { storageMenuOpen = true }) { Icon(Icons.Filled.SdCard, "ストレージ") }
@@ -340,27 +351,46 @@ private fun FileBrowser(vm: LocalViewModel) {
                     Text("空のフォルダです", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 96.dp),
-                ) {
-                    items(state.items, key = { it.file.path }) { item ->
-                        val selected = item.file in state.selection
-                        FileRow(
-                            item = item,
-                            selected = selected,
-                            modifier = Modifier.combinedClickable(
-                                onClick = {
-                                    when {
-                                        state.selectionMode -> vm.toggleSelect(item.file)
-                                        item.isDirectory -> vm.open(item.file)
-                                        ArchiveOps.isArchive(item.file) -> dialog = LocalDialog.ArchiveChoice(item.file)
-                                        else -> FileOpener.open(context, item.file)
-                                    }
-                                },
-                                onLongClick = { vm.toggleSelect(item.file) },
-                            ),
-                        )
+                val onClickItem: (FileItem) -> Unit = { item ->
+                    when {
+                        state.selectionMode -> vm.toggleSelect(item.file)
+                        item.isDirectory -> vm.open(item.file)
+                        ArchiveOps.isArchive(item.file) -> dialog = LocalDialog.ArchiveChoice(item.file)
+                        else -> FileOpener.open(context, item.file)
+                    }
+                }
+                if (state.grid) {
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = 104.dp),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(start = 6.dp, end = 6.dp, bottom = 96.dp),
+                    ) {
+                        gridItems(state.items, key = { it.file.path }) { item ->
+                            FileGridCell(
+                                item = item,
+                                selected = item.file in state.selection,
+                                modifier = Modifier.combinedClickable(
+                                    onClick = { onClickItem(item) },
+                                    onLongClick = { vm.toggleSelect(item.file) },
+                                ),
+                            )
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(bottom = 96.dp),
+                    ) {
+                        items(state.items, key = { it.file.path }) { item ->
+                            FileRow(
+                                item = item,
+                                selected = item.file in state.selection,
+                                modifier = Modifier.combinedClickable(
+                                    onClick = { onClickItem(item) },
+                                    onLongClick = { vm.toggleSelect(item.file) },
+                                ),
+                            )
+                        }
                     }
                 }
             }
@@ -480,7 +510,7 @@ private fun FileRow(item: FileItem, selected: Boolean, modifier: Modifier = Modi
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            FileIcon(item.name, item.isDirectory, selected)
+            LocalThumbSmall(item.file, item.isDirectory, item.modified, selected)
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text(item.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
@@ -492,6 +522,40 @@ private fun FileRow(item: FileItem, selected: Boolean, modifier: Modifier = Modi
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun FileGridCell(item: FileItem, selected: Boolean, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier.padding(4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        LocalThumb(
+            file = item.file,
+            isDirectory = item.isDirectory,
+            modified = item.modified,
+            selected = selected,
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f),
+            iconSize = 44.dp,
+            thumbSize = 128.dp,
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            item.name,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            if (item.isDirectory) "${item.childCount}項目" else Format.size(item.size),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

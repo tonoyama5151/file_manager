@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -72,7 +71,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
+import com.tonoyama.filemanager.thumb.ThumbBox
 import com.tonoyama.filemanager.ui.FileIcon
 import com.tonoyama.filemanager.ui.ProgressDialog
 import com.tonoyama.filemanager.util.FileOpener
@@ -86,8 +85,9 @@ private fun openInBrowser(context: Context, uri: Uri) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PCloudScreen(vm: PCloudViewModel = viewModel()) {
+fun PCloudScreen(vm: PCloudViewModel, onBack: () -> Unit) {
     val state by vm.state.collectAsState()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
@@ -106,11 +106,17 @@ fun PCloudScreen(vm: PCloudViewModel = viewModel()) {
     }
 
     if (state.loggedIn) {
-        CloudBrowser(state, vm, snackbar)
+        CloudBrowser(state, vm, snackbar, onBack)
     } else {
         Scaffold(
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
             snackbarHost = { SnackbarHost(snackbar) },
+            topBar = {
+                TopAppBar(
+                    navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "戻る") } },
+                    title = { Text("pCloud") },
+                )
+            },
         ) { padding ->
             LoginPane(state, vm, Modifier.padding(padding))
         }
@@ -138,7 +144,6 @@ private fun LoginPane(state: PCloudUiState, vm: PCloudViewModel, modifier: Modif
     Column(
         modifier = modifier
             .fillMaxSize()
-            .statusBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -259,7 +264,7 @@ private fun LoginPane(state: PCloudUiState, vm: PCloudViewModel, modifier: Modif
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CloudBrowser(state: PCloudUiState, vm: PCloudViewModel, snackbar: SnackbarHostState) {
+private fun CloudBrowser(state: PCloudUiState, vm: PCloudViewModel, snackbar: SnackbarHostState, onBack: () -> Unit) {
     var accountMenu by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<PEntry?>(null) }
 
@@ -271,9 +276,7 @@ private fun CloudBrowser(state: PCloudUiState, vm: PCloudViewModel, snackbar: Sn
         topBar = {
             TopAppBar(
                 navigationIcon = {
-                    if (state.stack.size > 1) {
-                        IconButton(onClick = { vm.goUp() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "上へ") }
-                    }
+                    IconButton(onClick = { if (!vm.goUp()) onBack() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "戻る") }
                 },
                 title = { Text(state.stack.last().name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 actions = {
@@ -335,7 +338,14 @@ private fun CloudBrowser(state: PCloudUiState, vm: PCloudViewModel, snackbar: Sn
                                 .padding(horizontal = 16.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            FileIcon(e.name, e.isFolder)
+                            ThumbBox(
+                                name = e.name,
+                                isDirectory = e.isFolder,
+                                selected = false,
+                                thumbKey = if (e.hasThumb) vm.thumbKey(e) else null,
+                                loader = if (e.hasThumb) suspend { vm.thumbnail(e) } else null,
+                                modifier = Modifier.size(42.dp),
+                            )
                             Spacer(Modifier.width(14.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(e.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)

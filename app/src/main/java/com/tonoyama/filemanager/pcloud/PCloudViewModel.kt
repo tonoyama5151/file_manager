@@ -7,6 +7,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.tonoyama.filemanager.local.LocalFileOps
 import com.tonoyama.filemanager.local.StoragePermission
+import com.tonoyama.filemanager.thumb.ThumbnailLoader
 import com.tonoyama.filemanager.util.Format
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -299,6 +300,15 @@ class PCloudViewModel(app: Application) : AndroidViewModel(app) {
 
     fun cancelDownload() {
         downloadJob?.cancel()
+    }
+
+    // ---------------- サムネイル ----------------
+
+    fun thumbKey(entry: PEntry) = "pcloud|${entry.fileId}|${entry.modified}"
+
+    suspend fun thumbnail(entry: PEntry): android.graphics.Bitmap? {
+        val a = api ?: return null
+        return ThumbnailLoader.load(thumbKey(entry)) { a.thumbnail(entry.fileId, 192) }
     }
 
     fun consumeReadyToOpen() = _state.update { it.copy(readyToOpen = null) }
